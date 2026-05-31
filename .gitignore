@@ -1,0 +1,10 @@
+﻿node_modules
+frontend/node_modules
+.env
+.coral/cache
+*.zip
+coral/coral.exe
+debug.log
+src/debug.log
+src/agent/debug.log
+src/api/debug.log

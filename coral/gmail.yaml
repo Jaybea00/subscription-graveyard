@@ -1,0 +1,172 @@
+name: gmail
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+description: |
+  Query Gmail messages, threads, and labels as SQL tables.
+  Supports filtering by subject, sender, date, and label.
+  Useful for auditing billing emails, receipts, and subscriptions.
+
+inputs:
+  GMAIL_ACCESS_TOKEN:
+    kind: secret
+    hint: "OAuth2 access token for Gmail. Use 'Connect with Google' below."
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Google
+          description: Open a browser and authorize Coral to read your Gmail data.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GMAIL_OAUTH_CLIENT_ID
+              secret:
+                input: GMAIL_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/gmail.readonly
+        - type: source_config
+          label: Paste access token
+
+  GMAIL_OAUTH_CLIENT_ID:
+    kind: variable
+    hint: "Google OAuth Client ID from your Google Cloud Console"
+
+  GMAIL_OAUTH_CLIENT_SECRET:
+    kind: secret
+    hint: "Google OAuth Client Secret from your Google Cloud Console"
+
+base_url: "https://gmail.googleapis.com"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.GMAIL_ACCESS_TOKEN}}"
+
+test_queries:
+  - SELECT id, thread_id FROM gmail.emails LIMIT 1
+
+tables:
+  - name: emails
+    description: |
+      Individual email messages in the authenticated user's Gmail account.
+      Each row is one message. Use the search_emails function to filter by
+      subject, sender, or date to find billing receipts and invoices.
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages
+    response:
+      rows_path:
+        - messages
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 50
+        max: 500
+        query_param: maxResults
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique Gmail message ID
+      - name: thread_id
+        type: Utf8
+        description: Thread this message belongs to
+        expr:
+          kind: path
+          path:
+            - threadId
+
+  - name: labels
+    description: |
+      All Gmail labels in the authenticated account, including system labels
+      like INBOX, SPAM, SENT and user-created labels.
+    request:
+      method: GET
+      path: /gmail/v1/users/me/labels
+    response:
+      rows_path:
+        - labels
+    columns:
+      - name: id
+        type: Utf8
+        description: Label ID
+      - name: name
+        type: Utf8
+        description: Human-readable label name (e.g. INBOX, Receipts)
+      - name: type
+        type: Utf8
+        description: Either 'system' or 'user'
+      - name: messages_total
+        type: Int64
+        nullable: true
+        description: Total number of messages with this label
+        expr:
+          kind: path
+          path:
+            - messagesTotal
+      - name: messages_unread
+        type: Int64
+        nullable: true
+        description: Number of unread messages with this label
+        expr:
+          kind: path
+          path:
+            - messagesUnread
+
+functions:
+  - name: search_emails
+    kind: search
+    description: |
+      Search Gmail messages using Gmail's native query syntax.
+      Supports operators like: from:, subject:, after:, before:, label:
+      Example: search_emails(q => 'subject:receipt OR subject:invoice')
+    search_limits:
+      default_top_k: 50
+      max_top_k: 500
+      max_calls_per_query: 3
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: maxResults
+          from: literal
+          value: 50
+    response:
+      rows_path:
+        - messages
+    columns:
+      - name: id
+        type: Utf8
+        description: Gmail message ID
+      - name: thread_id
+        type: Utf8
+        description: Thread ID
+        expr:
+          kind: path
+          path:
+            - threadId
